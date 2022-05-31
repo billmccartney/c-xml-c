@@ -1,0 +1,963 @@
+diff -Naur cil/Makefile.in cil-patched/Makefile.in
+--- cil/Makefile.in	2007-02-05 16:10:29.000000000 -0500
++++ cil-patched/Makefile.in	2010-06-28 11:34:54.000000000 -0400
+@@ -86,7 +86,7 @@
+               availexpslv predabst\
+               testcil \
+ 	      $(CILLY_FEATURES) \
+-	      ciloptions feature_config
++	      ciloptions feature_config xmlescape xmlpretty writexml
+ # ww: we don't want "main" in an external cil library (cil.cma),
+ # otherwise every program that links against that library will get
+ # main's argument checking and whatnot ...
+diff -Naur cil/src/main.ml cil-patched/src/main.ml
+--- cil/src/main.ml	2007-02-05 16:10:29.000000000 -0500
++++ cil-patched/src/main.ml	2010-06-28 11:35:52.000000000 -0400
+@@ -104,6 +104,7 @@
+     Dataslicing.feature;
+     Logcalls.feature;
+     Ptranal.feature;
++    Writexml.feature;
+     Liveness.feature;
+   ] 
+   @ Feature_config.features 
+diff -Naur cil/src/writexml.ml cil-patched/src/writexml.ml
+--- cil/src/writexml.ml	1969-12-31 19:00:00.000000000 -0500
++++ cil-patched/src/writexml.ml	2010-06-28 11:38:37.000000000 -0400
+@@ -0,0 +1,837 @@
++open Cil
++open Escape
++open Pretty
++open Xmlescape
++open Xmlpretty
++
++class xmlCilPrinterClass : cilPrinter = object (self)
++  (* we don't use these *)
++  method setCurrentFormals _ = ()
++  method setPrintInstrTerminator _ = ()
++  method getPrintInstrTerminator () = ""
++  
++  (* cil conflates var decls and func protos, this handles both *)
++  method pVDecl () vi =
++    let xml_tag, xml_attrs = match vi.vtype with
++      | TFun _ ->
++          "functionPrototype",
++          [
++            ("name", vi.vname);
++            ("id", string_of_int vi.vid);
++            ("isGlobal", string_of_bool vi.vglob);
++            ("isInline", string_of_bool vi.vinline);
++            ("isAddressTaken", string_of_bool vi.vaddrof);
++            ("isUsed", string_of_bool vi.vreferenced);
++          ]
++      | _ ->
++          "variableDeclaration",
++          [
++            ("name", vi.vname);
++            ("id", string_of_int vi.vid);
++            ("isGlobal", string_of_bool vi.vglob);
++            ("isAddressTaken", string_of_bool vi.vaddrof);
++            ("isUsed", string_of_bool vi.vreferenced);
++          ] in
++    xml_complex xml_tag xml_attrs [
++      self#pType None () vi.vtype;
++      self#pAttrs () vi.vattr;
++      self#pStor vi.vstorage;
++      self#pLoc vi.vdecl;
++    ]
++  
++  method pVar vi =
++    let xml_attrs = [
++      ("name", vi.vname);
++      ("id", string_of_int vi.vid);
++      ("isGlobal", string_of_bool vi.vglob);
++      ("isAddressTaken", string_of_bool vi.vaddrof);
++      ("isUsed", string_of_bool vi.vreferenced);
++    ] in
++    xml_complex "variableUse" xml_attrs []
++  
++  method pLval () lv =
++    let b, o = lv in
++    let base = match b with
++      | Var vi ->
++          xml_complex "base" [("kind", "variable")] [self#pVar vi]
++      | Mem e ->
++          xml_complex "base" [("kind", "objectAtEffectiveAddress")] [
++            self#pExp () e;
++          ] in
++    xml_complex "lvalue" [] [
++      base;
++      self#pOffset nil o;
++    ]
++  
++  (* ignore base arg, i don't use it but cilPrinter interface wants it *)
++  method pOffset _ = function
++    | NoOffset -> nil
++    | Field (fi, o) ->
++        xml_complex "offset" [("kind", "fieldAccess")] [
++          self#pFieldAcc fi;
++          self#pOffset nil o;
++        ]
++    | Index (e, o) ->
++        xml_complex "offset" [("kind", "arrayIndex")] [
++          self#pExp () e;
++          self#pOffset nil o;
++        ]
++  
++  method pInstr () = function
++    | Set (lv, e, loc) ->
++        xml_complex "instruction" [("kind", "assignment")] [
++          self#pLval () lv;
++          self#pExp () e;
++          self#pLoc loc;
++        ]
++    | Call (lv_opt, e, args, loc) -> begin match lv_opt with
++        (* if call has a result lval it's really an assignment *)
++        | Some lv ->
++            (* might need to cast result to type of lvalue. code to check for
++             * this case adapted from defaultCilPrinterClass#pInstr *)
++            let dest_t = typeOfLval lv in
++            let pt = typeSig in
++            let call_maybe_casted = match unrollType (typeOf e) with
++              | TFun (ret_t, _, _, _)
++                when not (Util.equals (pt ret_t) (pt dest_t)) ->
++                  xml_complex "cast" [] [
++                    self#pType None () dest_t;
++                    self#pFunCall e args;
++                  ]
++              | _ ->
++                  self#pFunCall e args in
++            xml_complex "instruction" [("kind", "assignment")] [
++              self#pLval () lv;
++              call_maybe_casted;
++              self#pLoc loc;
++            ]
++        | None ->
++          xml_complex "instruction" [("kind", "functionCall")] [
++            self#pFunCall e args;
++            self#pLoc loc;
++          ]
++        end (* match lv_opt *)
++    (* escape everything, god knows what's in what of these *)
++    | Asm (attrs, tmpls, outs, ins, clobs, loc) ->
++        let pOut (name_opt, constrnt, lv) =
++          let maybe_name = match name_opt with
++            | Some name -> xml_simple "name" [] [text (xml_escape_string name)]
++            | None -> nil in
++          xml_complex "operand" [] [
++            maybe_name;
++            xml_simple "constraintString" [] [
++              text (xml_escape_string constrnt);
++            ];
++            xml_complex "outputDestination" [] [self#pLval () lv];
++          ] in
++        let pIn (name_opt, constrnt, e) =
++          let maybe_name = match name_opt with
++            | Some name -> xml_simple "name" [] [text (xml_escape_string name)]
++            | None -> nil in
++          xml_complex "operand" [] [
++            maybe_name;
++            xml_simple "constraintString" [] [
++              text (xml_escape_string constrnt);
++            ];
++            xml_complex "loadedInput" [] [self#pExp () e];
++          ] in
++        let safe_tmpls = List.map xml_escape_string tmpls in
++        let safe_clobs = List.map xml_escape_string clobs in
++        xml_complex "instruction" [("kind", "gccInlineAssembly")] [
++          self#pAttrs () attrs;
++          xml_complex "assemblerTemplates" [] [
++            xml_seq (xml_simple "template" []) text safe_tmpls;
++          ];
++          xml_complex "outputOperands" [] [seq nil pOut outs];
++          xml_complex "inputOperands" [] [seq nil pIn ins];
++          xml_complex "clobberedRegisters" [] [
++            xml_seq (xml_simple "register" []) text safe_clobs;
++          ];
++          self#pLoc loc;
++        ]
++  
++  (* cil labels include case/default in switch statements *)
++  method pLabel () = function
++    | Label (name, loc, non_cil) ->
++        let xml_attrs = [
++          ("name", name);
++          ("isCilGenerated", string_of_bool (not non_cil));
++        ] in
++        xml_complex "label" xml_attrs [
++          self#pLoc loc;
++        ]
++    | Case (e, loc) ->
++        xml_complex "caseStatement" [] [
++          xml_complex "guard" [] [self#pExp () e];
++          self#pLoc loc;
++        ]
++    | Default loc ->
++        xml_complex "defaultCaseStatement" [] [self#pLoc loc]
++  
++  method pStmt () s =
++    let maybe_succs =
++      if s.succs = [] then nil
++      else xml_complex "cfgSuccessors" [] [seq nil (self#pStmt ()) s.succs] in
++    let maybe_preds =
++      if s.preds = [] then nil
++      else
++        xml_complex "cfgPredecessors" [] [seq nil (self#pStmt ()) s.preds] in
++    let xml_attrs =
++      if s.sid = -1 then []
++      else [("cfgID", string_of_int s.sid)] in
++    xml_complex "statement" xml_attrs [
++      seq nil (self#pLabel ()) s.labels;
++      (* actual stmt content is in here. first param is unused *)
++      self#pStmtKind invalidStmt () s.skind;
++      maybe_preds;
++      maybe_succs;
++    ]
++  
++  method dStmt out ind s =
++    fprint out !lineLength (indent ind (self#pStmt () s))
++  
++  method dBlock out ind b =
++    fprint out !lineLength (indent ind (self#pBlock () b))
++  
++  method pBlock () b =
++    xml_complex "block" [] [
++      self#pAttrs () b.battrs;
++      seq nil (self#pStmt ()) b.bstmts;
++    ]
++  
++  method pGlobal () = function
++    | GType (ti, loc) ->
++        let xml_attrs = [
++          ("name", ti.tname);
++          ("isUsed", string_of_bool ti.treferenced);
++        ] in
++        xml_complex "typeDefinition" xml_attrs [ 
++          self#pType None () ti.ttype;
++          self#pLoc loc;
++        ]
++    | GCompTag (ci, loc) ->
++        let xml_attrs = [
++          ("name", ci.cname);
++          ("kind", if ci.cstruct then "struct" else "union");
++          ("key", string_of_int ci.ckey);
++          ("isDefined", string_of_bool ci.cdefined);
++          ("isUsed", string_of_bool ci.creferenced);
++        ] in
++        xml_complex "compositeTagDefinition" xml_attrs [
++          seq nil (self#pFieldDecl ()) ci.cfields;
++          self#pAttrs () ci.cattr;
++          self#pLoc loc;
++        ]
++    | GCompTagDecl (ci, loc) ->
++        let xml_attrs = [
++          ("name", ci.cname);
++          ("kind", if ci.cstruct then "struct" else "union");
++          ("key", string_of_int ci.ckey);
++          ("isDefined", string_of_bool ci.cdefined);
++          ("isUsed", string_of_bool ci.creferenced);
++        ] in
++        xml_complex "compositeTagForwardDeclaration" xml_attrs [
++          self#pAttrs () ci.cattr;
++          self#pLoc loc;
++        ]
++    | GEnumTag (ei, loc) ->
++        let xml_attrs = [
++          ("name", ei.ename);
++          ("isUsed", string_of_bool ei.ereferenced);
++        ] in
++        xml_complex "enumerationTagDefinition" xml_attrs [
++          seq nil self#pEnumItem ei.eitems;
++          self#pAttrs () ei.eattr;
++          self#pLoc loc;
++        ]
++    | GEnumTagDecl (ei, loc) ->
++        let xml_attrs = [
++          ("name", ei.ename);
++          ("isUsed", string_of_bool ei.ereferenced);
++        ] in
++        xml_complex "enumerationTagForwardDeclaration" xml_attrs [
++          self#pAttrs () ei.eattr;
++          self#pLoc loc;
++        ]
++    (* loc part is ignored because it's already in vi.vdecl... right? *)
++    | GVarDecl (vi, _) -> self#pVDecl () vi
++    | GVar (vi, ii, loc) ->
++        let init = match ii.init with
++          | Some init -> self#pInit () init
++          | None -> nil in
++        let xml_attrs = [
++          ("name", vi.vname);
++          ("id", string_of_int vi.vid);
++          ("isAddressTaken", string_of_bool vi.vaddrof);
++          ("isUsed", string_of_bool vi.vreferenced);
++        ] in
++        xml_complex "variableDefinition" xml_attrs [
++          self#pType None () vi.vtype;
++          self#pAttrs () vi.vattr;
++          self#pStor vi.vstorage;
++          init;
++          self#pLoc loc;
++        ]
++    | GFun (fd, loc) ->
++        let pFunVar xml_tag vi =
++          let xml_attrs = [
++            ("name", vi.vname);
++            ("id", string_of_int vi.vid);
++            ("isAddressTaken", string_of_bool vi.vaddrof);
++            ("isUsed", string_of_bool vi.vreferenced);
++          ] in
++          xml_complex xml_tag xml_attrs [
++            self#pType None () vi.vtype;
++            self#pAttrs () vi.vattr;
++            self#pStor vi.vstorage;
++            self#pLoc vi.vdecl;
++          ] in
++        let maybe_cfg_info =
++          if fd.sallstmts = [] then nil
++          else 
++            xml_complex "cfgAllStatements" [] [
++              seq nil (self#pStmt ()) fd.sallstmts;
++            ] in
++        let xml_attrs = [
++          ("name", fd.svar.vname);
++          ("id", string_of_int fd.svar.vid);
++          ("isInline", string_of_bool fd.svar.vinline);
++          ("isAddressTaken", string_of_bool fd.svar.vaddrof);
++          ("isUsed", string_of_bool fd.svar.vreferenced);
++        ] in
++        xml_complex "functionDefinition" xml_attrs [
++          self#pType None () fd.svar.vtype;
++          self#pAttrs () fd.svar.vattr;
++          self#pStor fd.svar.vstorage;
++          xml_complex "formalParameters" [] [
++            seq nil (pFunVar "parameter") fd.sformals;
++          ];
++          xml_complex "localVariables" [] [
++            seq nil (pFunVar "local") fd.slocals;
++          ];
++          xml_complex "functionBody" [] [self#pBlock () fd.sbody];
++          maybe_cfg_info;
++          self#pLoc loc;
++        ]
++    | GAsm (tmpl, loc) ->
++        xml_complex "assemblyStatement" [] [
++          (* could be nasty chars in here, escape to be safe *)
++          xml_simple "template" [] [text (xml_escape_string tmpl)];
++          self#pLoc loc;
++        ]
++    | GPragma (attr, loc) ->
++        xml_complex "pragma" [] [
++          (* should this really use pAttr? *)
++          fst (self#pAttr attr);
++          self#pLoc loc;
++        ]
++    | GText str ->
++        xml_simple "text" [] [text str]
++  
++  method dGlobal out g =
++    fprint out !lineLength (indent 2 (self#pGlobal () g))
++  
++  method pFieldDecl () fi =
++    let bf, maybe_width = match fi.fbitfield with
++      | Some width -> true, xml_simple "width" [] [num width]
++      | None -> false, nil in
++    let xml_attrs = [
++      ("name", fi.fname);
++      ("isBitField", string_of_bool bf);
++    ] in
++    xml_complex "fieldDeclaration" xml_attrs [
++      self#pType None () fi.ftype;
++      maybe_width;
++      self#pAttrs () fi.fattr;
++      self#pLoc fi.floc;
++    ]
++  
++  (* first arg not needed in this class *)
++  method pType _ () = function
++    | TVoid attrs ->
++        xml_complex "type" [("kind", "void")] [self#pAttrs () attrs]
++    | TInt (ik, attrs) ->
++        let xml_attrs = [("kind", self#string_of_ikind ik)] in
++        xml_complex "type" xml_attrs [self#pAttrs () attrs]
++    | TFloat (fk, attrs) ->
++        let xml_attrs = [("kind", self#string_of_fkind fk)] in
++        xml_complex "type" xml_attrs [self#pAttrs () attrs]
++    | TPtr (t, attrs) ->
++        xml_complex "type" [("kind", "pointer")] [
++          self#pType None () t;
++          self#pAttrs () attrs;
++        ]
++    | TArray (t, e_opt, attrs) ->
++        let maybe_length = match e_opt with
++          | Some e -> xml_complex "length" [] [self#pExp () e]
++          | None -> nil in
++        xml_complex "type" [("kind", "array")] [
++          self#pType None () t;
++          maybe_length;
++          self#pAttrs () attrs;
++        ]
++    | TFun (result, formals_opt, varargs, attrs) ->
++        let pFormal (name, t, attrs) =
++          xml_complex "parameter" [] [
++            self#pType None () t;
++            self#pAttrs () attrs;
++          ] in
++        let maybe_formals = match formals_opt with
++          | Some formals ->
++              if formals = [] then
++                (* foo(void) *)
++                xml_simple "noParameters" [] []
++              else
++                (* foo(some params) *)
++                seq nil pFormal formals
++          | None ->
++              (* proto of foo not seen yet *)
++              xml_simple "parametersUnknown" [] [] in
++        let xml_attrs = [
++          ("kind", "function");
++          ("isVarArgs", string_of_bool varargs);
++        ] in
++        xml_complex "type" xml_attrs [
++          xml_complex "result" [] [self#pType None () result];
++          maybe_formals;
++          self#pAttrs () attrs;
++        ]
++    | TNamed (ti, attrs) ->
++        xml_complex "type" [("kind", "named"); ("name", ti.tname)] [
++          (* self#pType None () ti.ttype; *)
++          self#pAttrs () attrs;
++        ]
++    | TComp (ci, attrs) ->
++        let xml_attrs = [
++          ("name", ci.cname);
++          ("kind", if ci.cstruct then "struct" else "union");
++          ("key", string_of_int ci.ckey);
++          ("isDefined", string_of_bool ci.cdefined);
++        ] in
++        xml_complex "type" xml_attrs [
++          self#pAttrs () attrs;
++        ]
++    | TEnum (ei, attrs) ->
++        let xml_attrs = [
++          ("name", ei.ename);
++          ("kind", "enumeration");
++        ] in
++        xml_complex "type" xml_attrs [
++          self#pAttrs () attrs;
++        ]
++    (* wtf is this? 15 google results for it *)
++    | TBuiltin_va_list attrs ->
++        xml_complex "type" [("kind", "gccBuiltinVAList")] [
++          self#pAttrs () attrs;
++        ]
++  
++  method pAttr = function
++    | Attr (name, params) ->
++        xml_complex "attribute" [("name", name)] [
++          seq nil (self#pAttrParam ()) params;
++        ], true (* we don't use this boolean but interface wants it *)
++  
++  method pAttrParam () = function
++    | AInt i ->
++        xml_simple "parameter" [("kind", "integerConstant")] [num i]
++    | AStr s ->
++        xml_simple "parameter" [("kind", "stringConstant")] [text s]
++    | ACons (name, params) ->
++        xml_complex "parameter" [("kind", "constructed"); ("name", name)] [
++          seq nil (self#pAttrParam ()) params;
++        ]
++    | ASizeOf t ->
++        xml_complex "parameter" [("kind", "sizeOf")] [self#pType None () t]
++    | ASizeOfE param ->
++        xml_complex "parameter" [("kind", "sizeOf")] [
++          self#pAttrParam () param;
++        ]
++    | ASizeOfS ts ->
++        xml_complex "parameter" [("kind", "sizeOf")] [self#pTypeSig ts]
++    | AAlignOf t ->
++        xml_complex "parameter" [("kind", "alignOf")] [self#pType None () t]
++    | AAlignOfE param ->
++        xml_complex "parameter" [("kind", "alignOf")] [
++          self#pAttrParam () param;
++        ]
++    | AAlignOfS ts ->
++        xml_complex "parameter" [("kind", "alignOf")] [self#pTypeSig ts]
++    | AUnOp (uop, param) ->
++        let xml_attrs = [
++          ("kind", "unaryOp");
++          ("operator", self#string_of_unop uop);
++        ] in
++        xml_complex "parameter" xml_attrs [self#pAttrParam () param]
++    | ABinOp (bop, param1, param2) ->
++        let xml_attrs = [
++          ("kind", "binaryOp");
++          ("operator", self#string_of_binop bop);
++        ] in
++        xml_complex "parameter" xml_attrs [
++          self#pAttrParam () param1;
++          self#pAttrParam () param2;
++        ]
++    (* what is this dot? a field access? is star a ptr deref? *)
++    | ADot (param, name) ->
++        xml_complex "parameter" [("kind", "dot"); ("fieldName", name)] [
++          self#pAttrParam () param;
++        ]
++    | AStar param ->
++        xml_complex "parameter" [("kind", "star")] [self#pAttrParam () param]
++    | AAddrOf param ->
++        xml_complex "parameter" [("kind", "addressOf")] [
++          self#pAttrParam () param;
++        ]
++    | AIndex (ar, ind) ->
++        xml_complex "parameter" [("kind", "arrayIndex")] [
++          xml_complex "array" [] [self#pAttrParam () ar];
++          xml_complex "index" [] [self#pAttrParam () ind];
++        ]
++    | AQuestion (g, tb, fb) ->
++        xml_complex "parameter" [("kind", "ternaryOp")] [
++          xml_complex "guard" [] [self#pAttrParam () g];
++          xml_complex "trueBranch" [] [self#pAttrParam () tb];
++          xml_complex "falseBranch" [] [self#pAttrParam () fb];
++        ]
++  
++  method pAttrs () attrs =
++    let pAttr = (fun x -> fst (self#pAttr x)) in
++    if attrs = [] then nil (* don't print <attributes/> every damn time *)
++    else seq nil pAttr attrs
++  
++  (* no # directives in xml, we use pLoc to print location info instead *)
++  method pLineDirective ?forcefile _ = nil
++  
++  (* the actual content of a stmt is in here. stmtkind is a pretty bad name *)
++  method pStmtKind _ () = function
++    | Instr instrs ->
++        seq nil (self#pInstr ()) instrs;
++    | Return (e_opt, loc) ->
++        let maybe_e = match e_opt with
++          | Some e -> self#pExp () e
++          | None -> nil in
++        xml_complex "return" [] [
++          maybe_e;
++          self#pLoc loc;
++        ]
++    | Goto (s_ref, loc) ->
++        (* can't call self#pStmt on !s_ref here, could cause infinite loop.
++         * so instead just print its labels and stmt id *)
++        let s = !s_ref in
++        let xml_attrs = [("id", string_of_int s.sid)] in
++        let target = xml_complex "statementLabels" xml_attrs [
++          seq nil (self#pLabel ()) s.labels;
++        ] in
++        xml_complex "goto" [] [
++          target;
++          self#pLoc loc;
++        ]
++    | Break loc ->
++        xml_complex "break" [] [self#pLoc loc]
++    | Continue loc ->
++        xml_complex "continue" [] [self#pLoc loc]
++    | If (guard, tb, eb, loc) ->
++        xml_complex "if" [] [
++          xml_complex "guard" [] [self#pExp () guard];
++          xml_complex "thenBranch" [] [self#pBlock () tb];
++          xml_complex "elseBranch" [] [self#pBlock () eb];
++          self#pLoc loc;
++        ]
++    (* info in ignored stmt list param is redundant, stmts are in b *)
++    | Switch (e, b, _, loc) ->
++        xml_complex "switch" [] [
++          xml_complex "guard" [] [self#pExp () e];
++          self#pBlock () b;
++          self#pLoc loc;
++        ]
++    (* all loops in cil are converted to while (1) with continue/break *)
++    | Loop (b, loc, cont_opt, brk_opt) ->
++        (* continue and break stmts are in b somewhere, but if prepareCFG was
++         * called, we have easy references to them here too *)
++        let maybe_cont = match cont_opt with
++          | Some cont ->
++              xml_complex "cfgContinue" [] [
++                self#pStmt () cont;
++              ]
++          | None -> nil in
++        let maybe_brk = match brk_opt with
++          | Some brk ->
++              xml_complex "cfgBreak" [] [
++                self#pStmt () brk;
++              ]
++          | None -> nil in
++        xml_complex "infiniteLoop" [] [
++          self#pBlock () b;
++          maybe_cont;
++          maybe_brk;
++          self#pLoc loc;
++        ]
++    | Block b -> self#pBlock () b
++    | TryFinally (tb, fb, loc) ->
++        xml_complex "msvcTryFinally" [] [
++          xml_complex "try" [] [self#pBlock () tb];
++          xml_complex "finally" [] [self#pBlock () fb];
++          self#pLoc loc;
++        ]
++    | TryExcept (tb, (instrs, e), eb, loc) ->
++        (* pretty weird stuff here. cil stores some instrs for the filter along
++         * with the expected guard exp. these instrs are separated by the comma
++         * operator, so they are side-effect instrs whose values are ignored *)
++        let filter = xml_complex "filter" [] [
++          xml_complex "discardedValues" [] [seq nil (self#pInstr ()) instrs];
++          self#pExp () e;
++        ] in
++        xml_complex "msvcTryExcept" [] [
++          xml_complex "try" [] [self#pBlock () tb];
++          xml_complex "except" [] [
++            filter;
++            self#pBlock () eb;
++          ];
++          self#pLoc loc;
++        ]
++  
++  method pExp () = function
++    | Const c ->
++        xml_complex "expression" [("kind", "constant")] [self#pConst c]
++    | Lval lv -> 
++        xml_complex "expression" [("kind", "lvalue")] [self#pLval () lv]
++    | SizeOf t -> 
++        xml_complex "expression" [("kind", "sizeOf")] [self#pType None () t]
++    | SizeOfE e ->
++        xml_complex "expression" [("kind", "sizeOf")] [self#pExp () e]
++    | SizeOfStr s ->
++        xml_complex "expression" [("kind", "sizeOf")] [
++          xml_simple "stringLiteral" [] [text (xml_escape_string s)];
++        ]
++    | AlignOf t ->
++        xml_complex "expression" [("kind", "alignOf")] [self#pType None () t]
++    | AlignOfE e ->
++        xml_complex "expression" [("kind", "alignOf")] [self#pExp () e]
++    | UnOp (uop, e, t) ->
++        let xml_attrs = [
++          ("kind", "unaryOp");
++          ("operator", self#string_of_unop uop);
++        ] in
++        xml_complex "expression" xml_attrs [
++          self#pExp () e;
++          self#pType None () t;
++        ]
++    | BinOp (bop, e1, e2, t) ->
++        let xml_attrs = [
++          ("kind", "binaryOp");
++          ("operator", self#string_of_binop bop);
++        ] in
++        xml_complex "expression" xml_attrs [
++          self#pExp () e1;
++          self#pExp () e2;
++          self#pType None () t;
++        ]
++    | CastE (t, e) ->
++        xml_complex "expression" [("kind", "cast")] [
++          self#pType None () t;
++          self#pExp () e;
++        ]
++    | AddrOf lv ->
++        xml_complex "expression" [("kind", "addressOf")] [self#pLval () lv]
++    | StartOf lv ->
++        xml_complex "expression" [("kind", "startOfArray")] [self#pLval () lv]
++  
++  method pInit () = function
++    | SingleInit e ->
++        xml_complex "singleInitializer" [] [self#pExp () e]
++    | CompoundInit (t, inits_with_kind) ->
++        let pOffInit = function
++          | Index(e, NoOffset), i ->
++              xml_complex "arrayIndex" [] [
++                self#pExp () e;
++                self#pInit () i;
++              ]
++          | Field(fi, NoOffset), i ->
++              xml_complex "field" [] [
++                self#pFieldAcc fi; (* right function to use here? *)
++                self#pInit () i;
++              ]
++          (* cil docs say the above are the only valid cases *)
++          | _ -> assert false in
++        xml_complex "compoundInitializer" [] [
++          self#pType None () t;
++          seq nil pOffInit inits_with_kind;
++        ]
++  
++  method dInit out ind i =
++    fprint out !lineLength (indent ind (self#pInit () i))
++  
++  (* end cilPrinter interface methods, begin private helper methods *)
++  
++  method private pStor s =
++    let cls = match s with
++      | NoStorage -> "default"
++      | Static -> "static"
++      | Register -> "register"
++      | Extern -> "extern" in
++    xml_simple "storageClass" [] [text cls]
++  
++  method private pLoc l =
++    let xml_attrs = [
++      ("file", l.file);
++      ("line", string_of_int l.line);
++      ("byte", string_of_int l.byte);
++    ] in
++    xml_simple "location" xml_attrs []
++  
++  method private pFieldAcc fi =
++    let bf, maybe_width = match fi.fbitfield with
++      | Some width -> true, xml_simple "width" [] [num width]
++      | None -> false, nil in
++    let xml_attrs = [
++      ("name", fi.fname);
++      ("hostCompositeName", fi.fcomp.cname);
++      ("isBitField", string_of_bool bf);
++    ] in
++    xml_complex "fieldAccess" xml_attrs [maybe_width]
++  
++  method private pFunCall f args =
++    xml_complex "functionCall" [] [
++      xml_complex "name" [] [self#pExp () f];
++      xml_seq (xml_complex "argument" []) (self#pExp ()) args;
++    ]
++  
++  method private pEnumItem (name, e, loc) =
++    xml_complex "item" [] [
++      xml_simple "name" [] [text name];
++      xml_complex "value" [] [self#pExp () e];
++      self#pLoc loc;
++    ]
++  
++  method private string_of_ikind = function
++    | IChar -> "char"
++    | ISChar -> "signed char"
++    | IUChar -> "unsigned char"
++    | IInt -> "int"
++    | IUInt -> "unsigned int"
++    | IShort -> "short"
++    | IUShort -> "unsigned short"
++    | ILong -> "long"
++    | IULong -> "unsigned long"
++    | ILongLong -> "long long"
++    | IULongLong -> "unsigned long long"
++  
++  method private string_of_fkind = function
++    | FFloat -> "float"
++    | FDouble -> "double"
++    | FLongDouble -> "long double"
++  
++  method private string_of_unop = function
++    | Neg -> "negation"
++    | BNot -> "bitwiseNot"
++    | LNot -> "logicalNot"
++
++  method private string_of_binop = function
++    | PlusA -> "arithmeticPlus"
++    | PlusPI -> "pointerPlusInteger"
++    (* as cil docs say this is just a PlusPI for our purposes *)
++    | IndexPI -> "pointerPlusInteger"
++    | MinusA -> "arithmeticMinus"
++    | MinusPI -> "pointerMinusInteger"
++    | MinusPP -> "pointerMinusPointer"
++    | Mult -> "multiplication"
++    | Div -> "division"
++    | Mod -> "modulus"
++    | Shiftlt -> "shiftLeft"
++    | Shiftrt -> "shiftRight"
++    | Lt -> "lessThan"
++    | Gt -> "greaterThan"
++    | Le -> "lessOrEqual"
++    | Ge -> "greaterOrEqual"
++    | Eq -> "equal"
++    | Ne -> "notEqual"
++    | BAnd -> "bitwiseAnd"
++    | BXor -> "bitwiseXor"
++    | BOr -> "bitwiseOr"
++    | LAnd -> "logicalAnd"
++    | LOr -> "logicalOr"
++  
++  (* not sure what the deal is with these. defaultCilPrinterClass just prints
++   * literally the text "sizeof(<typsig>)" (yes, with angle brackets), which
++   * i'm pretty sure is not even valid c. so for now i will do something
++   * similar, until i figure out what should actually be done here *)
++  method private pTypeSig ts = xml_simple "typeSignature" [] []
++  
++  method private pConst = function
++    | CInt64 (i64, ik, rep_opt) ->
++        let maybe_text_rep = match rep_opt with
++          | Some rep -> xml_simple "textualRepresentation" [] [text rep]
++          | None -> nil in
++        let xml_attrs = [
++          ("kind", self#string_of_ikind ik);
++        ] in
++        xml_complex "constant" xml_attrs [
++          xml_simple "value" [] [
++            text (xml_escape_string (Int64.to_string i64));
++          ];
++          maybe_text_rep;
++        ]
++    | CStr s ->
++        xml_complex "constant" [("kind", "string")] [
++          xml_simple "value" [] [text (xml_escape_string s)];
++        ]
++    | CWStr i64s ->
++        xml_complex "constant" [("kind", "wideString")] [
++          xml_simple "value" [] [text (xml_escape_wstring i64s)];
++        ]
++    | CChr c ->
++        xml_complex "constant" [("kind", "character")] [
++          xml_simple "value" [] [text (xml_escape_char c)];
++        ]
++    | CReal (f, fk, rep_opt) ->
++        let maybe_text_rep = match rep_opt with
++          | Some rep -> xml_simple "textualRepresentation" [] [text rep]
++          | None -> nil in
++        let xml_attrs = [
++          ("kind", self#string_of_fkind fk);
++        ] in
++        xml_complex "constant" xml_attrs [
++          xml_simple "value" [] [real f];
++          maybe_text_rep;
++        ]
++    | CEnum (e, name, ei) ->
++        let xml_attrs = [
++          ("name", name);
++          ("kind", "enumerated");
++          ("hostEnumerationName", ei.ename);
++        ] in
++        xml_complex "constant" xml_attrs [
++          xml_complex "value" [] [self#pExp () e];
++        ]
++  
++end (* class xmlCilPrinterClass *)
++
++let format_filename s =
++  let r = Str.regexp "/" in
++  Str.global_replace r "_" s
++
++let write_file f =
++  let printer = new xmlCilPrinterClass in
++  printDepth := max_int;
++  lineLength := max_int;
++  fastMode := true;
++  let globals_doc = List.map (fun g -> printer#pGlobal () g) f.Cil.globals in
++  let filename = format_filename f.Cil.fileName in
++  let cil_name = f.Cil.fileName in
++  let no_extn_name = String.sub cil_name 0 (String.length cil_name - 2) in
++  let ast_name = no_extn_name ^ ".xml" in
++  let file_doc = xml_complex "file" ["name", filename] globals_doc in
++  let xml = sprint !lineLength file_doc in
++  let f = open_out_bin ast_name in
++  output_string f xml;
++  flush f;
++  close_out f
++
++let feature : featureDescr = {
++  fd_name = "writexml";
++  fd_enabled = ref false;
++  fd_description = "serializing the AST to XML format (verbose)";
++  fd_extraopt = [];
++  fd_doit = write_file;
++  fd_post_check = false;
++}
+diff -Naur cil/src/xmlescape.ml cil-patched/src/xmlescape.ml
+--- cil/src/xmlescape.ml	1969-12-31 19:00:00.000000000 -0500
++++ cil-patched/src/xmlescape.ml	2010-06-28 11:38:43.000000000 -0400
+@@ -0,0 +1,45 @@
++open Escape
++
++let xml_escape_char = function
++  | '&' -> "&amp;"
++  | '<' -> "&lt;"
++  | '>' -> "&gt;"
++  | '"' -> "&quot;"
++  | '\'' -> "&apos;"
++  | '\n' -> "&#xA;"
++  | '\r' -> "&#xD;"
++  | '\t' -> "&#x9;"
++  | ' ' .. '~' as printable -> String.make 1 printable
++  | unprintable ->
++      "<char>" ^ string_of_int (int_of_char unprintable) ^ "</char>"
++
++let xml_escape_string str =
++  let length = String.length str in
++  let buffer = Buffer.create length in
++  for index = 0 to length - 1 do
++    Buffer.add_string buffer (xml_escape_char (String.get str index))
++  done;
++  Buffer.contents buffer
++
++let xml_escape_wchar =
++  let limit upper probe = (Int64.to_float (Int64.sub upper probe)) > 0.5 in
++  let fits_byte = limit (Int64.of_int 0x100) in
++  let fits_universal_8 = limit (Int64.of_string "0x100000000") in
++  (fun charcode ->
++    if fits_byte charcode then
++      escape_char (Char.chr (Int64.to_int charcode))
++    else if fits_universal_8 charcode then
++      Printf.sprintf "&#x%Lx;" charcode
++    else
++      (* no idea what this means *)
++      invalid_arg "Cprint.escape_string_intlist")
++
++let xml_escape_wstring (str : int64 list) =
++  let length = List.length str in
++  let buffer = Buffer.create length in
++  let append charcode =
++    let addition = xml_escape_wchar charcode in
++    Buffer.add_string buffer addition
++  in
++  List.iter append str;
++  Buffer.contents buffer
+diff -Naur cil/src/xmlpretty.ml cil-patched/src/xmlpretty.ml
+--- cil/src/xmlpretty.ml	1969-12-31 19:00:00.000000000 -0500
++++ cil-patched/src/xmlpretty.ml	2010-06-28 11:38:51.000000000 -0400
+@@ -0,0 +1,46 @@
++open Pretty
++
++(* indentation level *)
++let depth = 2
++
++(* turn a (key, value) list into " key1="value1" key2="value2" ..." *)
++let rec mk_attr_str = function
++  | [] -> ""
++  | (k, v) :: t -> " " ^ k ^ "=\"" ^ v ^ "\"" ^ mk_attr_str t
++
++(* concatenate together all the docs in a doc list *)
++let rec cat = function
++  | [] -> nil
++  | h :: t -> h ++ (cat t)
++
++(* tell whether a doc, when actually printed, will just be empty *)
++let empty d = (sprint ~width:max_int d) = ""
++
++let xml_simple name attrs child_lst =
++  let children = cat child_lst in
++  if name = "" then
++    nil
++  else if empty children then
++    text ("<" ^ name ^ mk_attr_str attrs ^ "/>") ++ line
++  else
++    text ("<" ^ name ^ mk_attr_str attrs ^ ">")
++      ++ children
++      ++ text ("</" ^ name ^ ">")
++      ++ line
++
++let xml_complex name attrs child_lst =
++  let children = cat child_lst in
++  if name = "" then
++    nil
++  else if empty children then
++    text ("<" ^ name ^ mk_attr_str attrs ^ "/>") ++ line
++  else
++    text ("<" ^ name ^ mk_attr_str attrs ^ ">")
++      ++ line
++      ++ indent depth children
++      ++ text ("</" ^ name ^ ">")
++      ++ line
++
++let rec xml_seq wrapper f = function
++  | [] -> nil
++  | h :: t -> wrapper [f h] ++ xml_seq wrapper f t
