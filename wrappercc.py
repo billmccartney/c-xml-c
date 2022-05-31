@@ -3,7 +3,7 @@
 # See license.txt for license details
 # Bill McCartney June 26, 2011
 
-import sys, ConfigParser, os, random, string, shutil
+import sys, configparser, os, random, string, shutil
 from subprocess import *
 import tempfile
 
@@ -28,7 +28,7 @@ class ccpass:
 
 class config:
   def __init__(self, filename):
-    self.config = ConfigParser.RawConfigParser()
+    self.config = configparser.RawConfigParser()
     self.config.read(filename)
     self.passes = []
     idx = 1
@@ -62,7 +62,7 @@ class config:
 def loadconfig():
   #this searches for a global variable first, and then errors out
   #FIXME - add a default search path
-  if(os.environ.has_key("CXMLC_CONFIG")):
+  if("CXMLC_CONFIG" in os.environ):
     return config(os.environ["CXMLC_CONFIG"])
   else:
     try:
@@ -74,12 +74,12 @@ def myrun(args):
     (errorcode, stdout)
   """
   if(global_debug):
-    print "Running :'%s'" % (" ".join(args))
+    print("Running :'%s'" % (" ".join(args)))
   p = Popen(" ".join(args), shell=True, stdin=PIPE, stdout=PIPE, stderr=STDOUT)#, close_fds=True)
   output = p.stdout.read()
   retval = p.wait()
   if(global_debug):
-    print "retval = ", retval
+    print("retval = ", retval)
 
   return retval, output
 
@@ -126,9 +126,9 @@ class ArgProcessor:
       #FIXME - this is hardcoded with GCC defaults
       result, preprocessor = myrun([self.config.output] + self.finalargs + cinputs + ["-E"])
       if(global_debug):
-        print  " ".join([self.config.output] + self.finalargs + cinputs + ["-E"])
+        print(" ".join([self.config.output] + self.finalargs + cinputs + ["-E"]))
       if(result != 0):
-        print "Error while preprocessing the files: %s" % preprocessor
+        print("Error while preprocessing the files: %s" % preprocessor)
         sys.exit(result)
       #Here is an ugly hack to remove license stuff from microchip which looks like
       #Microchip MPLAB C30 License Manager Version v3_24 (Build Date Jul 12 2010).
@@ -148,14 +148,14 @@ class ArgProcessor:
       result, data = myrun([self.cillypath] + dummyfilename + ["--dowritexml"])
       #result, data = myrun([self.cillypath] + dummyfilename + ["--disallowDuplication", "--noLowerConstants", "--decil", "--noInsertImplicitCasts", "--dowritexml"])
       if(result):
-        print "Error while c-xml:",data
+        print("Error while c-xml:",data)
         sys.exit(result)
       return data
   def runpass(self, cmd, idx):
     code, data = myrun([cmd])
     if(code):
       #here we print the error code that xmlc returned, and exit
-      print "Error running pass %d:"%idx, data
+      print("Error running pass %d:"%idx, data)
       sys.exit(code)
     return data
   def xmltoc(self, xmlfilename):
@@ -163,7 +163,7 @@ class ArgProcessor:
     code, data = myrun([xmlcpath, xmlfilename])
     if(code):
       #here we print the error code that xmlc returned, and exit
-      print "Error running xml to c:", data
+      print("Error running xml to c:", data)
       sys.exit(code)
     return data
   def writefile(self, filename, data):
@@ -177,8 +177,8 @@ class ArgProcessor:
     elif(self.state == Compiler.BYPASS):
       code, output = myrun([self.config.output]+self.args[1:])
       if(code):
-        print "Error code:%d" % code
-        print output
+        print("Error code:%d" % code)
+        print(output)
         sys.exit(code)
     elif(self.state == Compiler.FAKE):
       if(self.output):
@@ -208,7 +208,7 @@ class ArgProcessor:
         else:
           cinputs += [c]
       if(global_debug):
-        print "cfiles: %s args: %s" % (cinputs, self.finalargs)
+        print("cfiles: %s args: %s" % (cinputs, self.finalargs))
       #Create a temporary directory
       temp = os.path.abspath(os.path.join(os.curdir,"cxmlc"))#tempfile.mkdtemp()
       shutil.rmtree(temp, True) #remove the folder ignoring any errors
@@ -220,13 +220,13 @@ class ArgProcessor:
       idx = 0
       for f in cinputs:
         if(global_debug):
-          print "preprocessing %s" % f
+          print("preprocessing %s" % f)
         preprocessor = self.preprocess([f])
         self.writefile(os.path.join(temp, "input%d.c" % idx), preprocessor)
         idx += 1
       self.cillypath = os.path.join(self.config.path,"cil","cilly."+self.config.platform)
       #cinputs += [dummyfilename] #FIXME - I think this is wrong... i think it should be replacing not adding to...
-      data = self.toxml([dummyfilename] + [os.path.join(temp,"input%d.c" % idx) for idx in xrange(0,len(cinputs))])
+      data = self.toxml([dummyfilename] + [os.path.join(temp,"input%d.c" % idx) for idx in range(0,len(cinputs))])
       xmlfilename = "stdo.xml"#dummyfilename[:-2]+".xml"
       #FIXME -- do the passes here...
       #pick a random base name
@@ -239,7 +239,7 @@ class ArgProcessor:
       for c in self.config.passes:
         newxmlfilename = os.path.join(temp, "Pass%d.xml"%idx)
         if(global_debug):
-          print "Pass ",idx
+          print("Pass ",idx)
         if(c.reprocess and (idx!=1)): #if we need to reprocess (and it isn't the first pass)
           data = self.xmltoc(xmlfilename)
           tempfilename = os.path.join(temp,"Pass%d.c"%idx)
@@ -253,15 +253,15 @@ class ArgProcessor:
         #replace the %1 and %2 with the input and output filenames respectively
         cmd = c.command.replace("%1",xmlfilename).replace("%2",newxmlfilename)
         if(global_debug):
-          print "Running :",cmd
+          print("Running :",cmd)
         data = self.runpass(cmd,idx)
         if(c.debug):
-          print "output :",data
+          print("output :",data)
         xmlfilename = newxmlfilename
         idx += 1
       #nextxmlfilename = xmlfilename
       if(global_debug):
-        print "About to xml-c"
+        print("About to xml-c")
       data = self.xmltoc(xmlfilename)
       finalfilename = os.path.join(temp,"final.c")
       f = open(finalfilename, "w")
@@ -279,7 +279,7 @@ class ArgProcessor:
       else:
         code, data = myrun([self.config.output] + self.finalargs + [finalfilename] + outputs) #FIXME - this is gcc specific
         if(global_debug):
-          print data
+          print(data)
       #help(exit)
       sys.exit(code)
   def handlearg(self, idx, arg):

@@ -45,7 +45,7 @@ class function:
       self.children += [name]
   def struct(self, functions, dom):
     #here we precalculate all of the children that are blocking
-    children = [c for c in self.children if functions.has_key(c) and functions[c].isblocking and not functions[c].isyield]
+    children = [c for c in self.children if c in functions and functions[c].isblocking and not functions[c].isyield]
     s = "struct %s%s {\n" %(PREFIX, self.title)
     #E - we should add some overflow check that we don't have more than 255 entry points...
     s += "  %s state;\n"%STATE_TYPE
@@ -111,7 +111,7 @@ class visitor:
 #searching visitor states
 
 class ScanAst(visitor):
-  IDLE, INFUNCTION, INRESULT, INPARAMS, INVARS, INBODY, INCALL, INCALLERNAME  = range(8)
+  IDLE, INFUNCTION, INRESULT, INPARAMS, INVARS, INBODY, INCALL, INCALLERNAME  = list(range(8))
   def __init__(self):
     self.functions = {} #Dictionary of functions
     self.state = self.IDLE
@@ -212,13 +212,13 @@ def populateTree(functions):
             functions[f].isblocking = True
             blocking += [f]
             break
-  print "blocking = ",blocking
+  print("blocking = ",blocking)
   #for c in blocking:
   #  print functions[c].struct(functions,dom)
   return blocking
 
 class Transformer(visitor):
-  IDLE, INFUNCTION, INRESULT, INPARAMS, INVARS, INBODY, INCALL, INCALLERNAME  = range(8)
+  IDLE, INFUNCTION, INRESULT, INPARAMS, INVARS, INBODY, INCALL, INCALLERNAME  = list(range(8))
   def __init__(self, functions, blocking):
     self.functions = functions
     self.blocking = blocking
@@ -261,7 +261,7 @@ class Transformer(visitor):
     else:
       s = ""
     if(not (LABEL_POINTERS or DUFFS_DEVICE)):
-      for i in xrange(1, self.idx+1):
+      for i in range(1, self.idx+1):
         s += "if(%s->state == %s)goto %s_%s_%s;\n"%(CONTEXT_NAME, i, PREFIX, self.current, i)
     return s
   def makelabel(self):
@@ -319,7 +319,7 @@ class Transformer(visitor):
     elif(self.state == self.INCALLERNAME):
       if(node.nodeName == "variableUse"):
         if(node.getAttribute("name") in self.blocking):
-          print "must swap %s in %s" % (node.getAttribute("name"), self.current)
+          print("must swap %s in %s" % (node.getAttribute("name"), self.current))
           self.mustswap = True
           self.swapname = node.getAttribute("name")
     #this part of the routine changes any variable accesses to use the structure
@@ -329,13 +329,13 @@ class Transformer(visitor):
           if(node.getAttribute("isGlobal").lower() == "false"):
             #figure out if it is an arg or a automatic var
             name = node.getAttribute("name")
-            if(name in self.functions[self.current].locals.keys()):
+            if(name in list(self.functions[self.current].locals.keys())):
               #handle it as a key...
               pre = self.dom.createElement("pre")
               txt = self.dom.createTextNode(CONTEXT_NAME +"->locals."+ name)
               pre.appendChild(txt)
               node.parentNode.replaceChild(pre, node)
-            elif(name in self.functions[self.current].args.keys()):
+            elif(name in list(self.functions[self.current].args.keys())):
               pre = self.dom.createElement("pre")
               txt = self.dom.createTextNode(CONTEXT_NAME +"->ops.args."+ name)
               pre.appendChild(txt)
@@ -402,7 +402,7 @@ class Transformer(visitor):
             node.parentNode.replaceChild(pre, node)
           else:
             #Here we setup the alternate calling method:
-            print "Setting up %s in %s" % (self.swapname, self.current)
+            print("Setting up %s in %s" % (self.swapname, self.current))
             s = "{//Beginning of function call -- First setup arguments\n"
             for arg in self.functions[self.swapname].argorder:
               s += CONTEXT_NAME + "->children."+self.swapname+".ops.args."+arg+" = %s;\n"
@@ -425,7 +425,7 @@ class Transformer(visitor):
             #If it is a funciton call instruction, then replace the existing call with it
             if(kind == "functionCall"):
               node.parentNode.replaceChild(pre, node)
-              print "Replacing a function call.."
+              print("Replacing a function call..")
             elif(kind == "assignment"):
               if(self.functions[self.swapname].isvoid):
                 raise Exception("The function %s is used in an assignment operation, and it is a void function."%self.swapname)
@@ -440,7 +440,7 @@ class Transformer(visitor):
               raise Exception("The function %s called inside of %s is called from something other than an assignment or functionCall instruction."%(self.swapname, self.current))
     if(node.nodeName == "attribute"):
       if(node.getAttribute("name") == "blockingstack"):
-        print "Found a blocking stack..."
+        print("Found a blocking stack...")
         #here we do a sanity check and make sure that the parent is a type
         if(node.parentNode.nodeName != "type"):
           raise Exception("The blockingstack attribute should only be used on variable types.")
@@ -461,7 +461,7 @@ class Transformer(visitor):
                 newparent.setAttribute("name", PREFIX+possiblename)
                 break
             else:
-              print "Error, no function named '%s' was found" % (name)
+              print("Error, no function named '%s' was found" % (name))
               sys.exit(-1)
           else:
             newparent.setAttribute("name", PREFIX+name)
@@ -504,7 +504,7 @@ if __name__ == "__main__":
     args.remove("-preemptionvar")
     args.remove(PREEMPTION_VAR)
   if len(args) not in [3,4]:
-    print 'usage: %s [-preemption] [-preemptionvar %s] infile.xml outfile.xml' % (sys.argv[0], PREEMPTION_VAR)
+    print('usage: %s [-preemption] [-preemptionvar %s] infile.xml outfile.xml' % (sys.argv[0], PREEMPTION_VAR))
     sys.exit(1)
   input = args[1]
   output = args[2]
@@ -513,10 +513,10 @@ if __name__ == "__main__":
   else:
     mode("generated")
   if input == output:
-    print 'error: in-file and out-file names must be different'
+    print('error: in-file and out-file names must be different')
     sys.exit(1)
   if os.path.exists(output):
-    print 'error: out-file already exists'
+    print('error: out-file already exists')
     sys.exit(1)
   make_stackless(input, output)
 

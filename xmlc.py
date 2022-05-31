@@ -17,7 +17,7 @@ class SimpleHandler(sax.ContentHandler):
     self.current_stack = []
   def startElement(self, name, attrs):
     global keys
-    if(name in types.keys()):
+    if(name in list(types.keys())):
       node = types[name](name, attrs)
     else:
       node = element(name, attrs)
@@ -79,7 +79,7 @@ class element:
   def __init__(self, name, attr):
     self.__name = name
     self.joinval = " "
-    for k in attr.keys():
+    for k in list(attr.keys()):
       self.__dict__[str(k)] = attr[k]
     self.mychildren=[]
   def get_name(self):
@@ -92,7 +92,7 @@ class element:
   def printout(self, called = False):
     global unimplemented
     if(not called) and (self.joinval == " "):
-      if(self.__name not in unimplemented + ignored + types.keys()):
+      if(self.__name not in unimplemented + ignored + list(types.keys())):
         unimplemented += [self.__name]
     if(hasattr(self, "enclosing")):
       if(self.enclosing):
@@ -107,7 +107,7 @@ class element:
   def getindex(self, name):
     return [c.get_name() for c in self.mychildren].index(name)
   def getindeces(self, name):
-    return [i for i in xrange(0,len(self.mychildren)) if self.mychildren[i].get_name() == name]
+    return [i for i in range(0,len(self.mychildren)) if self.mychildren[i].get_name() == name]
   def raw(self):
     return self.mydata.replace("\\n","\n").replace("\\t","\t")
 
@@ -704,13 +704,13 @@ types["operand"] = operand
 class base(element):
   def printout(self):
     if(len(self.mychildren) != 1):
-      raise "Error, a base instance should have only one child"
+      raise(Exception("Error, a base instance should have only one child"))
     if(self.kind == "variable"):
       return self.mychildren[0].printout()
     if(self.kind == "objectAtEffectiveAddress"):
       return "(*("+self.mychildren[0].printout()+"))"
-    print "Error, invalid base type %s" % self.kind
-    raise "Error, invalid base type %s" % self.kind
+    print("Error, invalid base type %s" % self.kind)
+    raise(Exception("Error, invalid base type %s" % self.kind))
 types["base"] = base
 
 class preformatted(element):
@@ -752,7 +752,7 @@ if __name__ == "__main__":
   import sys
   # Parse a file!
   parser.parse(sys.argv[1])
-  print "/*printout =*/\n",handler.top.printout()
+  print("/*printout =*/\n",handler.top.printout())
 #  print mylist
-  print "/*unimplemented = ",unimplemented
-  print "*/"
+  print("/*unimplemented = ",unimplemented)
+  print("*/")
