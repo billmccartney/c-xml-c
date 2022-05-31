@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/local/bin/python
 # This performs the unstacked c stackless transformation
 # See license.txt for license details
 # Bill McCartney June 26, 2011

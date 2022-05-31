@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/local/bin/python
 # This is the XML-C generator from the C-XML-C project (see www.cxmlc.com)
 # See license.txt for license details
 # Bill McCartney June 26, 2011
