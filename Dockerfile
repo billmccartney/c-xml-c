@@ -18,6 +18,11 @@ RUN ./compile.sh
 FROM  python:3.9-slim
 WORKDIR /app
 RUN dpkg --add-architecture i386
-RUN apt-get update && apt-get install -y libc6-dbg libc6-dbg:i386 lib32stdc++6 && rm -rf /var/lib/apt/lists/*
-COPY --from=0 /app/cilly.native ./
-
+RUN apt-get update && apt-get install -y libc6-dbg libc6-dbg:i386 lib32stdc++6 gcc && rm -rf /var/lib/apt/lists/*
+RUN mkdir /app/cil
+RUN mkdir /app/bin
+COPY --from=0 /app/cilly.native /app/cil/cilly.native
+COPY *.py config.ini test.c ./
+COPY xmlc.py /app/bin/xmlc.py
+#RUN chmod 755 /app/bin/xmlc.py
+RUN python wrappercc.py test.c
