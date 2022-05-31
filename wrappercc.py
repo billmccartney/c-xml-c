@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/local/bin/python
 # This is the gcc wrapper for C-XML-C (www.cxmlc.com)
 # See license.txt for license details
 # Bill McCartney June 26, 2011
@@ -80,7 +80,7 @@ def myrun(args):
   retval = p.wait()
   if(global_debug):
     print("retval = ", retval)
-
+  output = output.decode()
   return retval, output
 
 class Compiler:
@@ -233,7 +233,7 @@ class ArgProcessor:
       if(len(self.output)):
         base = self.output.replace("\\","").replace("/","").replace(".","")
       else:
-        base = ''.join(random.sample(string.letters+string.digits, 10))
+        base = ''.join(random.sample(string.ascii_lowercase+string.digits, 10))
       idx = 1      
       #This is the main loop for passes...
       for c in self.config.passes:
