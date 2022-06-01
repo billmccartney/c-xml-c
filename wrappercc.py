@@ -45,7 +45,7 @@ class config:
       section = 'Pass%d'%idx
     self.output = self.myget("Output","command","")
     self.platform = self.myget("Output","platform","native")
-    self.path = self.myget("Output","path",os.path.abspath(filename))
+    self.path = self.myget("Output","path",os.path.dirname(os.path.abspath(filename)))
     global global_debug
     global_debug = self.myget("Output","debug",False)
     #since we have successfully loaded the config file, add it's path to the system path to possibly find any translations
