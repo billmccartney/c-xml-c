@@ -1,1 +1,1 @@
-docker run -it cxmlc uvicorn server/server:app
+docker run -p 8000:8000 -it  cxmlc  uvicorn server.server:app --host 0.0.0.0
