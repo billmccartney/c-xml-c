@@ -1,1 +1,1 @@
-docker built -t cxmlc .
+docker build -t cxmlc .
