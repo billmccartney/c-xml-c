@@ -1,0 +1,10 @@
+(yield = 1) Diff in usec 751368
+(yield = 2) Diff in usec 579535
+(yield = 3) Diff in usec 614686
+(yield = 4) Diff in usec 684881
+(yield = 5) Diff in usec 1591400
+(yield = 6) Diff in usec 1633649
+(yield = 7) Diff in usec 1573232
+(yield = 8) Diff in usec 1567957
+(yield = 9) Diff in usec 1563434
+(yield = 10) Diff in usec 1559581
