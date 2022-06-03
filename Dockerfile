@@ -24,7 +24,7 @@ RUN pip3 install -r requirements.txt
 #RUN apt-get update && apt-get install -y gcc && rm -rf /var/lib/apt/lists/* && apt-get clean
 RUN mkdir /app/cil
 RUN mkdir /app/bin
-COPY --from=0 /app/cilly.native /app/cil/cilly.native
+COPY --from=0 /app/cilly.* /app/cil/
 COPY *.py config.ini test.c ./
 COPY xmlc.py /app/bin/xmlc.py
 COPY server /app/server
