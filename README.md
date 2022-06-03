@@ -35,7 +35,7 @@ tk
 There are several example transformations described in this [paper](https://engagedscholarship.csuohio.edu/etdarchive/196/). They can be found in the ./transforms folder.
 
 # License
-3-Clause BSD -- see license.txt for details
+3-Clause BSD -- see LICENSE.txt for details
 
 # Outside Components
 There are a few parts of this outside of the license:
